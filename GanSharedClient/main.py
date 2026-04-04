@@ -20,7 +20,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 import ssl
 import platform
 
-__version__ = "1.0" 
+__version__ = "1.2.11.1" 
 
 __doc__ = """
 GanShared is a cross-platform file sharing software based on Python, 
@@ -131,13 +131,11 @@ class InitApp:
 
         self.port = 45622
         self.upload_max_size = self.format_filesize_to_bytes("32GB") # 32GB
-
+        
         if getattr(sys, 'frozen', False):
-            self.core_dir = os.path.dirname(sys.executable)
-            self.is_exe_environment = True
+            self.core_dir = os.path.join(os.path.dirname(sys.executable), "main")
         else:
             self.core_dir = os.path.dirname(os.path.abspath(__file__))
-            self.is_exe_environment = False
         
         self.hidden_items = set()
         self.is_connected = False
@@ -602,7 +600,10 @@ class AppNetwork:
                     password=self.get_cert_password()
                 )
             except Exception as e:
-                self.sock.close()
+                try:
+                    self.sock.close()
+                except:
+                    pass
                 
                 messagebox.showerror("GanShared", f"Failed to load certificate file: {e}")
                 
