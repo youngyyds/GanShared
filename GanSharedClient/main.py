@@ -20,7 +20,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 import ssl
 import platform
 
-__version__ = "1.2.11.1" 
+__version__ = "1.0" 
 
 __doc__ = """
 GanShared is a cross-platform file sharing software based on Python, 
