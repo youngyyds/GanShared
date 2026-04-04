@@ -19,7 +19,7 @@ import ssl
 import platform
 import sys
 
-__version__ = "1.0"
+__version__ = "1.2.11.1"
 
 class ServerAdminGUI(tk.Tk):
     def __init__(self):
@@ -220,11 +220,9 @@ class AppInit:
         self.server_config_path = os.path.join(self.data_folder_path, "server_config.json")
         
         if getattr(sys, 'frozen', False):
-            self.core_dir = os.path.dirname(sys.executable)
-            self.is_exe_enviroment = True
+            self.core_dir = os.path.join(os.path.dirname(sys.executable), "main")
         else:
             self.core_dir = os.path.dirname(os.path.abspath(__file__))
-            self.is_exe_enviroment = False
 
         self.all_ipaddress = []
 
