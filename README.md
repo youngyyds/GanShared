@@ -3,7 +3,7 @@
 ## Overview
 GanShared is a cross-platform, lightweight file sharing application. It supports secure, encrypted file transfers, server management, and a user-friendly graphical interface.
 
-*   **Current Version**: 1.2.11.1release
+*   **Current Version**: 1.0release
 *   **Author**: youngyyds
 *   **License**: MIT
 *   **Repository**: https://github.com/youngyyds/GanShared
