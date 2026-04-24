@@ -21,12 +21,11 @@ import sys
 
 __version__ = "1.2.11.1"
 
-class ServerAdminGUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("GanShared Server Admin")
-        self.resizable(False, False)
-
+class AppInit:        
+    def init_app(self, loadssl: bool = True):
+        self.sock = socket.socket()
+        self.port = 45622
+        self.listen = 120
         self.system_username = getpass.getuser()
         if sys.platform == "win32":
             self.data_folder_path = os.path.join(os.path.expanduser("~"), "AppData", "Local", "GanShared")
@@ -34,17 +33,118 @@ class ServerAdminGUI(tk.Tk):
             self.data_folder_path = os.path.join(os.path.expanduser("~"), ".local", "share", "GanShared")
         elif sys.platform == "darwin":
             self.data_folder_path = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "GanShared")
+        # Max stored files can be configured via GUI or server_config.json, default 512
+        self.max_stored_files = 512
+        self.save_files_dir = os.path.join(self.data_folder_path, "save_files")
+        self.files_user_dir = os.path.join(self.data_folder_path, "files_user")
+        self.key = None
+        # server config file path (writable by GUI)
         self.server_config_path = os.path.join(self.data_folder_path, "server_config.json")
+        if getattr(sys, 'frozen', False):
+            self.core_dir = os.path.join(os.path.dirname(sys.executable), "main")
+        else:
+            self.core_dir = os.path.dirname(os.path.abspath(__file__))
+        self.all_ipaddress = []
+        
+        os.chdir(self.data_folder_path)
+        if not os.path.exists(self.data_folder_path):
+            os.makedirs(self.data_folder_path)
+        if not os.path.exists(self.save_files_dir):
+            os.makedirs(self.save_files_dir)
+        if not os.path.exists(self.files_user_dir):
+            os.makedirs(self.files_user_dir)
 
-        with open(self.server_config_path, "r", encoding="utf-8") as f:
+        if loadssl:
+            self.context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            
+            self.context.verify_mode = ssl.CERT_REQUIRED
+            self.context.check_hostname = False
+
             try:
-                self.cfg = json.load(f)
-            except Exception:
-                self.cfg = {}
-            f.close()
-    
-        os.makedirs(self.data_folder_path, exist_ok=True)
+                self.context.load_verify_locations(cafile=os.path.join(self.core_dir, "ca.crt"))
+                self.context.load_cert_chain(
+                    certfile=os.path.join(self.core_dir, "server.crt"), 
+                    keyfile=os.path.join(self.core_dir, "server.key"), 
+                    password=self.get_password()
+                )
+            except Exception as e:
+                messagebox.showerror(
+                    "Error", 
+                    "Failed to load SSL certificate and key."\
+                    f"\n{e}\n"\
+                    f"\nPlease check if the core directory '{self.core_dir}' is writable by the current user."\
+                )
+                sys.exit(1)
+                
+        # configure logging to file inside data folder
+        try:
+            logger = logging.getLogger('GanSharedServer')
+            logger.setLevel(logging.INFO)
+            log_path = os.path.join(self.data_folder_path, 'server.log')
+            handler = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+            formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+            handler.setFormatter(formatter)
+            if not logger.handlers:
+                logger.addHandler(handler)
+            self.logger = logger
+            self.logger.info('Logger initialized')
+        except Exception as e:
+            # best-effort logging; continue
+            messagebox.showerror(
+                "Error", 
+                "Failed to initialize logger"\
+                f"\n{e}"\
+                f"\nPlease check if the data folder {self.data_folder_path} is writable by the current user."\
+            )
+            sys.exit(1)
 
+        # Ensure server_config.json exists; migrate old key.txt if present
+        try:
+            if not os.path.exists(self.server_config_path):
+                migrated_key = None
+
+                self.cfg = {"max_stored_files": self.max_stored_files, "key": migrated_key}
+                
+                try:
+                    with open(self.server_config_path, "w", encoding="utf-8") as cf:
+                        json.dump(self.cfg, cf)
+                    try:
+                        self.logger.info('Created default server_config.json')
+                    except Exception:
+                        pass
+                except Exception:
+                    try:
+                        self.logger.exception('Failed to create server_config.json')
+                    except Exception:
+                        pass
+
+            # If server_config.json exists, try loading it to override defaults
+            else:
+                with open(self.server_config_path, "r", encoding="utf-8") as cfgf:
+                    self.cfg = json.load(cfgf)
+                if isinstance(self.cfg, dict):
+                    if "max_stored_files" in self.cfg:
+                        try:
+                            val = int(self.cfg.get("max_stored_files", self.max_stored_files))
+                            # allow -1 (no limit) or positive integers up to 65565
+                            if val == -1 or (1 <= val <= 65565):
+                                self.max_stored_files = val
+                            elif val > 65565:
+                                self.max_stored_files = 65565
+                        except Exception:
+                            pass
+                    # key is kept inside server_config.json; no separate keyfile used
+        except Exception:
+            pass
+
+class ServerAdminGUI(tk.Tk, AppInit):
+    def __init__(self):
+        super().__init__()
+        self.title("GanShared Server Admin")
+        self.resizable(False, False)
+
+        self.init_app(False)
+        
         self._build_ui()
         self._load_values()
 
@@ -78,21 +178,18 @@ class ServerAdminGUI(tk.Tk):
     def _load_values(self):
         # load max files from server_config.json if exists
         try:
-            if os.path.exists(self.server_config_path):
-                with open(self.server_config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                if isinstance(cfg, dict) and "max_stored_files" in cfg:
-                    try:
-                        val = int(cfg.get("max_stored_files", 512))
-                        # cap to allowed range (-1 or 1..65565)
-                        if val == -1:
-                            self.max_files_var.set(-1)
-                        elif 1 <= val <= 65565:
-                            self.max_files_var.set(val)
-                        elif val > 65565:
-                            self.max_files_var.set(65565)
-                    except Exception:
-                        pass
+            if isinstance(self.cfg, dict) and "max_stored_files" in self.cfg:
+                try:
+                    val = int(self.cfg.get("max_stored_files", 512))
+                    # cap to allowed range (-1 or 1..65565)
+                    if val == -1:
+                        self.max_files_var.set(-1)
+                    elif 1 <= val <= 65565:
+                        self.max_files_var.set(val)
+                    elif val > 65565:
+                        self.max_files_var.set(65565)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -113,9 +210,7 @@ class ServerAdminGUI(tk.Tk):
         # load key from server_config.json if exists
         try:
             if os.path.exists(self.server_config_path):
-                with open(self.server_config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                k = cfg.get("key") if isinstance(cfg, dict) else None
+                k = self.cfg.get("key") if isinstance(self.cfg, dict) else None
                 if k and k != "None":
                     self.key_var.set(str(k))
                 else:
@@ -198,123 +293,6 @@ class ServerAdminGUI(tk.Tk):
         except Exception as e:
             logging.getLogger('GanSharedServer').exception("Failed to start server from GUI")
             messagebox.showerror("Error", f"Failed to start server:\n{e}")
-
-class AppInit:        
-    def init_app(self):
-        self.sock = socket.socket()
-        self.port = 45622
-        self.listen = 120
-        self.system_username = getpass.getuser()
-        if sys.platform == "win32":
-            self.data_folder_path = os.path.join(os.path.expanduser("~"), "AppData", "Local", "GanShared")
-        elif sys.platform == "linux":
-            self.data_folder_path = os.path.join(os.path.expanduser("~"), ".local", "share", "GanShared")
-        elif sys.platform == "darwin":
-            self.data_folder_path = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "GanShared")
-        # Max stored files can be configured via GUI or server_config.json, default 512
-        self.max_stored_files = 512
-        self.save_files_dir = os.path.join(self.data_folder_path, "save_files")
-        self.files_user_dir = os.path.join(self.data_folder_path, "files_user")
-        self.key = None
-        # server config file path (writable by GUI)
-        self.server_config_path = os.path.join(self.data_folder_path, "server_config.json")
-        
-        if getattr(sys, 'frozen', False):
-            self.core_dir = os.path.join(os.path.dirname(sys.executable), "main")
-        else:
-            self.core_dir = os.path.dirname(os.path.abspath(__file__))
-
-        self.all_ipaddress = []
-
-        self.context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        
-        self.context.verify_mode = ssl.CERT_REQUIRED
-        self.context.check_hostname = False
-        
-        try:
-            self.context.load_verify_locations(cafile=os.path.join(self.core_dir, "ca.crt"))
-            self.context.load_cert_chain(
-                certfile=os.path.join(self.core_dir, "server.crt"), 
-                keyfile=os.path.join(self.core_dir, "server.key"), 
-                password=self.get_password()
-            )
-        except Exception as e:
-            messagebox.showerror(
-                "Error", 
-                "Failed to load SSL certificate and key."\
-                f"\n{e}\n"\
-                f"\nPlease check if the core directory {self.core_dir} is writable by the current user."\
-            )
-            sys.exit(1)
-        
-        os.chdir(self.data_folder_path)
-        
-        if not os.path.exists(self.data_folder_path):
-            os.makedirs(self.data_folder_path)
-        if not os.path.exists(self.save_files_dir):
-            os.makedirs(self.save_files_dir)
-        if not os.path.exists(self.files_user_dir):
-            os.makedirs(self.files_user_dir)
-            
-        # configure logging to file inside data folder
-        try:
-            logger = logging.getLogger('GanSharedServer')
-            logger.setLevel(logging.INFO)
-            log_path = os.path.join(self.data_folder_path, 'server.log')
-            handler = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
-            formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
-            handler.setFormatter(formatter)
-            if not logger.handlers:
-                logger.addHandler(handler)
-            self.logger = logger
-            self.logger.info('Logger initialized')
-        except Exception as e:
-            # best-effort logging; continue
-            messagebox.showerror(
-                "Error", 
-                "Failed to initialize logger"\
-                f"\n{e}"\
-                f"\nPlease check if the data folder {self.data_folder_path} is writable by the current user."\
-            )
-            sys.exit(1)
-
-        # Ensure server_config.json exists; migrate old key.txt if present
-        try:
-            if not os.path.exists(self.server_config_path):
-                migrated_key = None
-
-                cfg = {"max_stored_files": self.max_stored_files, "key": migrated_key}
-                try:
-                    with open(self.server_config_path, "w", encoding="utf-8") as cf:
-                        json.dump(cfg, cf)
-                    try:
-                        self.logger.info('Created default server_config.json')
-                    except Exception:
-                        pass
-                except Exception:
-                    try:
-                        self.logger.exception('Failed to create server_config.json')
-                    except Exception:
-                        pass
-
-            # If server_config.json exists, try loading it to override defaults
-            if os.path.exists(self.server_config_path):
-                with open(self.server_config_path, "r", encoding="utf-8") as cfgf:
-                    cfg = json.load(cfgf)
-                if isinstance(cfg, dict):
-                    if "max_stored_files" in cfg:
-                        try:
-                            val = int(cfg.get("max_stored_files", self.max_stored_files))
-                            # allow -1 (no limit) or positive integers up to 65565
-                            if val == -1 or (1 <= val <= 65565):
-                                self.max_stored_files = val
-                            elif val > 65565:
-                                self.max_stored_files = 65565
-                        except Exception:
-                            pass
-                    # key is kept inside server_config.json; no separate keyfile used
-        except Exception:
-            pass
 
 class AppTools:
     def get_password(self) -> str:
